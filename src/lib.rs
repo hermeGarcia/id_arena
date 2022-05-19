@@ -1,149 +1,103 @@
-use std::ops::Index;
 use std::marker::PhantomData;
+use std::ops::{Index, IndexMut};
 
-#[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
-pub struct ArenaId<T> {
-    loc: usize,
-    content: PhantomData<T>,
+#[derive(Debug)]
+pub struct ArenaID<T> {
+    index: usize,
+    of_type: PhantomData<T>,
 }
-impl<T> ArenaId<T> {
-    pub fn new(loc: usize) -> ArenaId<T> {
-        ArenaId {
-            loc,
-            content: PhantomData
+impl<T> Copy for ArenaID<T> {}
+impl<T> Eq for ArenaID<T> {}
+impl<T> Ord for ArenaID<T> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.partial_cmp(other).unwrap()
+    }
+}
+impl<T> PartialEq for ArenaID<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.index == other.index
+    }
+}
+impl<T> PartialOrd for ArenaID<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.index.cmp(&other.index))
+    }
+}
+impl<T> Clone for ArenaID<T> {
+    fn clone(&self) -> Self {
+        ArenaID {
+            index: self.index,
+            of_type: self.of_type,
+        }
+    }
+}
+impl<T> std::hash::Hash for ArenaID<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.index.hash(state);
+    }
+}
+impl<T> From<usize> for ArenaID<T> {
+    fn from(elem: usize) -> ArenaID<T> {
+        ArenaID {
+            index: elem,
+            of_type: PhantomData,
         }
     }
 }
 
-
-pub struct ArenaIter<T> {
-    crnt: Option<usize>,
-    mark: PhantomData<T>,
-    max: usize,
-}
-
-impl<T> Iterator for ArenaIter<T> {
-    type Item = ArenaId<T>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.crnt {
-            None if self.max != 0 => {
-                self.crnt = Some(0);
-            },
-            Some(v) if v + 1 != self.max => {
-                self.crnt = Some(v + 1);
-            }
-            _ => {
-                self.crnt = None;
-            }
-        }
-        self.crnt.map(|v| { ArenaId::new(v) })
-    }
-}
-
-#[derive(Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Arena<T> {
-    grains: Vec<T>,
-    free: Vec<usize>,
+    raw: Vec<T>,
 }
 
-impl<T> Index<ArenaId<T>> for Arena<T> {
-    type Output = T;
-    fn index(&self, index: ArenaId<T>) -> &Self::Output {
-        let index_value = index.loc;
-        match self.get(index) {
-            Some(v) => v,
-            None => panic!("Invalid ArenaId used: length is {}, index is {}", self.len(), index_value)
-        }
+impl<T> Default for Arena<T> {
+    fn default() -> Self {
+        Arena { raw: Vec::new() }
     }
 }
 
+impl<T> Index<ArenaID<T>> for Arena<T> {
+    type Output = T;
+    fn index(&self, idx: ArenaID<T>) -> &Self::Output {
+        self.get(idx).unwrap()
+    }
+}
+impl<T> IndexMut<ArenaID<T>> for Arena<T> {
+    fn index_mut(&mut self, idx: ArenaID<T>) -> &mut Self::Output {
+        self.get_mut(idx).unwrap()
+    }
+}
 impl<T> Arena<T> {
     pub fn new() -> Arena<T> {
-        Arena {
-            grains: vec![],
-            free: vec![],
-        }
+        Arena::default()
     }
-
-    pub fn alloc(&mut self, value: T) -> ArenaId<T> {
-        match self.free.pop() {
-            Some(address) => {
-                let id = ArenaId::new(address);
-                self.grains[address] = value;
-                id
-            }
-            None => {
-                let id = ArenaId::new(self.len());
-                self.grains.push(value);
-                id
-            }
-        }
+    pub fn store(&mut self, elem: T) -> ArenaID<T> {
+        let index = self.raw.len();
+        self.raw.push(elem);
+        ArenaID::from(index)
     }
-
-    pub fn free(&mut self, ArenaId { loc, .. }: ArenaId<T>) {
-        self.free.push(loc);
+    pub fn get(&self, at: ArenaID<T>) -> Option<&T> {
+        self.raw.get(at.index)
     }
-
-    pub fn get(&self, ArenaId {loc, ..} : ArenaId<T>) -> Option<&T> {
-        if loc >= self.len() {
-            None
-        } else {
-            Some(&self.grains[loc])
-        }
+    pub fn get_mut(&mut self, at: ArenaID<T>) -> Option<&mut T> {
+        self.raw.get_mut(at.index)
     }
-
-    pub fn get_mut(&mut self, ArenaId {loc, .. }: ArenaId<T>) -> Option<&mut T> {
-        if loc >= self.len() {
-            None
-        } else {
-            Some(&mut self.grains[loc])
-        }
-    }
-
-    pub fn iter(&self) -> ArenaIter<T> {
-        ArenaIter { crnt: None, mark: PhantomData, max: self.len() }
-    }
-
-    pub fn len(&self) -> usize {
-        self.grains.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.grains.is_empty()
+    pub fn no_elems(&self) -> usize {
+        self.raw.len()
     }
 }
 
 #[cfg(test)]
-mod arena_test {
+mod tests {
+    use super::*;
     #[test]
-    fn arena_index_test() {
-        use super::*;
+    fn arena_test() {
         let mut arena = Arena::new();
-        let h_id = arena.alloc("h".to_string());
-        let a_id = arena.alloc("a".to_string());
-        let l_id = arena.alloc("l".to_string());
-        let o_id = arena.alloc("o".to_string());
-
-        assert_eq!("h".to_string(), arena[h_id]);
-        assert_eq!("a".to_string(), arena[a_id]);
-        assert_eq!("l".to_string(), arena[l_id]);
-        assert_eq!("o".to_string(), arena[o_id]);
-
-        let mut word = String::new();
-        for id in arena.iter() {
-            word.push_str(arena[id].as_str());
-        }
-        assert_eq!("halo", &word);
-    }
-    #[test]
-    fn arena_empty_test() {
-        use super::*;
-        let arena: Arena<String> = Arena::new();
-        let mut word = String::new();
-        for id in arena.iter() {
-            word.push_str(arena[id].as_str());
-        }
-        assert!(word.is_empty());
+        let id1 = arena.store("something");
+        let id2 = arena.store("something else");
+        assert_eq!(arena[id1], "something");
+        assert_eq!(arena[id2], "something else");
+        arena[id1] = "something different";
+        assert_eq!(arena[id1], "something different");
     }
 }
